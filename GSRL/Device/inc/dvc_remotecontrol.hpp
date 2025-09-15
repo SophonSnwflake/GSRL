@@ -46,10 +46,11 @@ public:
     } __attribute__((packed));
 
     // DR16遥控器拨杆状态
-    enum SwitchStatus : uint8_t {
+    enum SwitchStatus : int8_t {
         SWITCH_UP = 1,
         SWITCH_DOWN,
-        SWITCH_MIDDLE
+        SWITCH_MIDDLE,
+        SWITCH_ERROR = -1 // 检查m_originalRxDataPointer是否为空
     };
 
     // DR16遥控器拨杆跳变事件
@@ -63,9 +64,10 @@ public:
     };
 
     // DR16遥控器按键状态
-    enum KeyStatus : uint8_t {
+    enum KeyStatus : int8_t {
         KEY_RELEASE = 0,
-        KEY_PRESS
+        KEY_PRESS,
+        KEY_ERROR = -1 // 检查m_originalRxDataPointer是否为空
     };
 
     // DR16遥控器按键跳变事件
@@ -161,6 +163,7 @@ public:
     }
     SwitchStatus getRightSwitchStatus()
     {
+        if (m_originalRxDataPointer == nullptr) return SWITCH_ERROR;
         return m_rightSwitchStatus = (SwitchStatus)m_originalRxDataPointer->Switch_2;
     }
     SwitchEvent getRightSwitchEvent()
@@ -169,6 +172,7 @@ public:
     }
     SwitchStatus getLeftSwitchStatus()
     {
+        if (m_originalRxDataPointer == nullptr) return SWITCH_ERROR;
         return m_leftSwitchStatus = (SwitchStatus)m_originalRxDataPointer->Switch_1;
     }
     SwitchEvent getLeftSwitchEvent()
@@ -192,6 +196,7 @@ public:
     }
     KeyStatus getMouseLeftKeyStatus()
     {
+        if (m_originalRxDataPointer == nullptr) return KEY_ERROR;
         return m_mouseLeftKeyStatus = (KeyStatus)m_originalRxDataPointer->Mouse_Left_Key;
     }
     KeyEvent getMouseLeftKeyEvent()
@@ -200,6 +205,7 @@ public:
     }
     KeyStatus getMouseRightKeyStatus()
     {
+        if (m_originalRxDataPointer == nullptr) return KEY_ERROR;
         return m_mouseRightKeyStatus = (KeyStatus)m_originalRxDataPointer->Mouse_Right_Key;
     }
     KeyEvent getMouseRightKeyEvent()
@@ -208,6 +214,7 @@ public:
     }
     KeyStatus getKeyboardKeyStatus(KeyboardKeyIndex keyIndex)
     {
+        if (m_originalRxDataPointer == nullptr) return KEY_ERROR;
         return m_keyboardKeyStatus[keyIndex] = (KeyStatus)(m_originalRxDataPointer->Keyboard_Key >> keyIndex & 0x01);
     }
     KeyEvent getKeyboardKeyEvent(KeyboardKeyIndex keyIndex)
