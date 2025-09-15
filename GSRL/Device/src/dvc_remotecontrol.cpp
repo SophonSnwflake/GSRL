@@ -92,22 +92,22 @@ void Dr16RemoteControl::decodeRxData()
  */
 void Dr16RemoteControl::updateEvent()
 {
+    if (m_originalRxDataPointer == nullptr) return;
     m_lastRightSwitchStatus   = m_rightSwitchStatus;
     m_rightSwitchStatus       = (SwitchStatus)m_originalRxDataPointer->Switch_2;
-    m_rightSwitchEvent = judgeSwitchStatus(m_rightSwitchStatus, m_lastRightSwitchStatus);
+    m_rightSwitchEvent        = judgeSwitchStatus(m_rightSwitchStatus, m_lastRightSwitchStatus);
     m_lastLeftSwitchStatus    = m_leftSwitchStatus;
     m_leftSwitchStatus        = (SwitchStatus)m_originalRxDataPointer->Switch_1;
-    m_leftSwitchEvent = judgeSwitchStatus(m_leftSwitchStatus, m_lastLeftSwitchStatus);
+    m_leftSwitchEvent         = judgeSwitchStatus(m_leftSwitchStatus, m_lastLeftSwitchStatus);
     m_lastMouseLeftKeyStatus  = m_mouseLeftKeyStatus;
     m_mouseLeftKeyStatus      = (KeyStatus)m_originalRxDataPointer->Mouse_Left_Key;
-    m_mouseLeftKeyEvent = judgeKeyStatus(m_mouseLeftKeyStatus, m_lastMouseLeftKeyStatus);
+    m_mouseLeftKeyEvent       = judgeKeyStatus(m_mouseLeftKeyStatus, m_lastMouseLeftKeyStatus);
     m_lastMouseRightKeyStatus = m_mouseRightKeyStatus;
     m_mouseRightKeyStatus     = (KeyStatus)m_originalRxDataPointer->Mouse_Right_Key;
-    m_mouseRightKeyEvent = judgeKeyStatus(m_mouseRightKeyStatus, m_lastMouseRightKeyStatus);
-    for (uint8_t keyIndex = 0; keyIndex < KEY_TOTAL_NUMBER; keyIndex++)
-    {
+    m_mouseRightKeyEvent      = judgeKeyStatus(m_mouseRightKeyStatus, m_lastMouseRightKeyStatus);
+    for (uint8_t keyIndex = 0; keyIndex < KEY_TOTAL_NUMBER; keyIndex++) {
         m_lastKeyboardKeyStatus[keyIndex] = m_keyboardKeyStatus[keyIndex];
         m_keyboardKeyStatus[keyIndex]     = (KeyStatus)(m_originalRxDataPointer->Keyboard_Key >> keyIndex & 0x01);
-        m_keyboardKeyEvent[keyIndex] = judgeKeyStatus(m_keyboardKeyStatus[keyIndex], m_lastKeyboardKeyStatus[keyIndex]);
+        m_keyboardKeyEvent[keyIndex]      = judgeKeyStatus(m_keyboardKeyStatus[keyIndex], m_lastKeyboardKeyStatus[keyIndex]);
     }
 }
