@@ -374,7 +374,7 @@
               <MiscControls />
               <Define />
               <Undefine />
-              <IncludePath>../Inc</IncludePath>
+              <IncludePath>../Inc;../Drivers/CMSIS/Include</IncludePath>
             </VariousControls>
           </Aads>
           <LDads>
