@@ -37,6 +37,9 @@ add_executable(${CMAKE_PROJECT_NAME})
 # Add STM32CubeMX generated sources
 add_subdirectory(CubeMX_BSP/cmake/stm32cubemx)
 
+# Add DSP library sources
+add_subdirectory(CubeMX_BSP/DSP)
+
 # Add GSRL sources
 add_subdirectory(GSRL)
 
@@ -70,5 +73,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
 
     # Add user defined libraries
+    CMSISDSP
     gsrl
 )
