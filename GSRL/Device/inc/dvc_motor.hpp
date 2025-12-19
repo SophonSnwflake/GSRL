@@ -1,4 +1,3 @@
-
 /**
  ******************************************************************************
  * @file           : dvc_motor.hpp
@@ -137,10 +136,10 @@ protected:
 class MotorM3508 : public MotorGM6020
 {
 protected:
-    uint8_t m_gearboxRatio; // 减速比倒数，用于换算电机转速、角速度，电机角度、圈数不受此值影响，默认为1即不换算
+    fp32 m_gearboxRatio; // 减速比倒数，用于换算电机转速、角速度，电机角度、圈数不受此值影响，默认为1即不换算
 
 public:
-    MotorM3508(uint8_t dji3508MotorID, Controller *controller, uint16_t encoderOffset = 0, uint8_t gearboxRatio = 1);
+    MotorM3508(uint8_t dji3508MotorID, Controller *controller, uint16_t encoderOffset = 0, fp32 gearboxRatio = 1.0f);
 
 protected:
     bool decodeCanRxMessage(const can_rx_message_t &rxMessage) override;
@@ -197,20 +196,20 @@ protected:
     static constexpr uint16_t m_encoderResolution = 65535;
     static constexpr int16_t m_openloopLimit      = 2048;
     uint16_t m_encoderRaw;
-    uint8_t m_gearboxRatio;  // 减速比，是一个大于1的整数
+    fp32 m_gearboxRatio;     // 减速比
     fp32 m_maxVelocity;      // 最大速度，单位rad/s
     bool m_isMotorClockwise; // 是否顺时针旋转
-    bool m_isBraked;        // 是否刹车
+    bool m_isBraked;         // 是否刹车
 
 public:
-    MotorLKMG(uint8_t lkMotorID, Controller *controller, uint16_t encoderOffset = 0, uint8_t gearboxRatio = 1);
+    MotorLKMG(uint8_t lkMotorID, Controller *controller, uint16_t encoderOffset = 0, fp32 gearboxRatio = 1.0f);
     void hardwareAngularVelocityClosedloopControl();
     void hardwareAngularVelocityClosedloopControl(fp32 targetAngularVelocity);
     void hardwareAngleClosedloopControl();
     void hardwareAngleClosedloopControl(fp32 targetAngle, fp32 maxVelocity, bool isMotorClockwise);
     void hardwareRevolutionsClosedloopControl();
     void hardwareRevolutionsClosedloopControl(fp32 targetAngle, fp32 maxVelocity);
-    void hardwareBrakeControl(bool isBraked);
+    void setBrake(bool isBraked);
     uint8_t getMotorID() const { return m_lkMotorID; }
 
 protected:
