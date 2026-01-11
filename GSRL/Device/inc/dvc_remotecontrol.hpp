@@ -17,8 +17,8 @@
 /* Includes ------------------------------------------------------------------*/
 #include "gsrl_common.h"
 #include "drv_uart.h"
-#include "dvc_remotecontrol_protocol.hpp"
 #include <math.h>
+#include <cstdint>
 
 /******************************************************************************
  *                           遥控器基类实现
@@ -57,7 +57,7 @@ public:
         KEY_NO_CHANGE,
         KEY_TOGGLE_PRESS_RELEASE,
         KEY_TOGGLE_RELEASE_PRESS,
-        KEY_EVENT_NO_UPDATE_ERROR = -1 //防止updateEvent()函数是否提前调用
+        KEY_EVENT_NO_UPDATE_ERROR = -1 // 防止updateEvent()函数是否提前调用
     };
 
 protected:
@@ -89,9 +89,21 @@ public:
 class Dr16RemoteControl : public RemoteControl
 {
 public:
-    using Protocol     = Dr16RemoteControlProtocol;
-    using RawPacket    = Protocol::RawPacket;
-    using ProtocolData = Protocol::Data;
+    struct RawPacket {
+        uint64_t Channel_0 : 11;
+        uint64_t Channel_1 : 11;
+        uint64_t Channel_2 : 11;
+        uint64_t Channel_3 : 11;
+        uint64_t Switch_2 : 2;
+        uint64_t Switch_1 : 2;
+        int16_t Mouse_X;
+        int16_t Mouse_Y;
+        int16_t Mouse_Z;
+        uint64_t Mouse_Left_Key : 8;
+        uint64_t Mouse_Right_Key : 8;
+        uint64_t Keyboard_Key : 16;
+        uint64_t Channel_4 : 11;
+    } __attribute__((packed));
 
     enum KeyboardKeyIndex : uint8_t {
         KEY_W = 0,
@@ -115,8 +127,6 @@ public:
 
 private:
     RawPacket *m_originalRxDataPointer; // DR16遥控器原始接收数据指针
-    ProtocolData m_protocolData;        // 解码后的协议数据缓存
-    Protocol m_protocol;
 
     // DR16遥控器解码数据
     fp32 m_rightStickX;
@@ -254,16 +264,73 @@ public:
 class ET08ARemoteControl : public RemoteControl
 {
 public:
-    using Protocol     = ET08ARemoteControlProtocol;
-    using RawPacket    = Protocol::RawPacket;
-    using ProtocolData = Protocol::Data;
-    using Config       = Protocol::Config;
-    using ChannelIndex = Protocol::ChannelIndex;
+    struct ET08ARawPacket {
+        uint8_t startByte;
+        uint8_t data[22];
+        uint8_t stopByte;
+    } __attribute__((packed));
+
+    // ET08A通道索引枚举
+enum ET08AChannelIndex : uint8_t {
+    CH_1 = 0,
+    CH_2,
+    CH_3,
+    CH_4,
+    CH_5,
+    CH_6,
+    CH_7,
+    CH_8,
+    CH_NONE = 0xFF
+};
+
+// ET08A配置结构体
+struct Config {
+    ET08AChannelIndex rightStickJ1X;
+    ET08AChannelIndex rightStickJ2Y;
+    ET08AChannelIndex leftStickJ3Y;
+    ET08AChannelIndex leftStickJ4X;
+
+    ET08AChannelIndex switchSA;
+    ET08AChannelIndex switchSB;
+    ET08AChannelIndex switchSC;
+    ET08AChannelIndex switchSD;
+
+    ET08AChannelIndex knobLD;
+    ET08AChannelIndex knobRD;
+
+    ET08AChannelIndex trimmerT1;
+    ET08AChannelIndex trimmerT2;
+    ET08AChannelIndex trimmerT3;
+    ET08AChannelIndex trimmerT4;
+
+    Config();
+};
 
 private:
-    RawPacket *m_originalRxDataPointer;
-    ProtocolData m_protocolData; // 解码后的协议数据缓存
-    Protocol m_protocol;
+    struct ET08AProtocolData {
+        uint16_t rightStickX;
+        uint16_t rightStickY;
+        uint16_t leftStickX;
+        uint16_t leftStickY;
+
+        uint16_t switchSA;
+        uint16_t switchSB;
+        uint16_t switchSC;
+        uint16_t switchSD;
+
+        uint16_t knobLD;
+        uint16_t knobRD;
+
+        uint16_t trimmerT1;
+        uint16_t trimmerT2;
+        uint16_t trimmerT3;
+        uint16_t trimmerT4;
+    };
+    
+
+    ET08ARawPacket *m_originalRxDataPointer;
+    ET08AProtocolData m_protocolData; // 解码后的协议数据缓存
+    Config m_config;
 
     // ET08A 特有控件状态
     SwitchStatus m_switchSA, m_switchSB, m_switchSC, m_switchSD;
@@ -289,14 +356,17 @@ public:
 
     const Config &getConfig() const
     {
-        return m_protocol.config();
+        return m_config;
     }
 
     void setConfig(const Config &config)
     {
-        m_protocol.setConfig(config);
+        m_config            = config;
         m_isDecodeCompleted = false;
     }
+
+    // ET08A协议解析函数
+    void parseET08AProtocol(const uint8_t *buffer, ET08AProtocolData &out) const;
 
     // ET08A 特有获取函数
     SwitchStatus getSwitchSA()

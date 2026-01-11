@@ -75,8 +75,6 @@ fp32 RemoteControl::applyStickDeadZone(fp32 stickValue)
 Dr16RemoteControl::Dr16RemoteControl(fp32 stickDeadZone)
     : RemoteControl(stickDeadZone),
       m_originalRxDataPointer(nullptr),
-      m_protocolData{},
-      m_protocol(),
       m_rightStickX(0.0f),
       m_rightStickY(0.0f),
       m_leftStickX(0.0f),
@@ -176,11 +174,11 @@ ET08ARemoteControl::ET08ARemoteControl(Config config, fp32 stickDeadZone)
     : RemoteControl(stickDeadZone),
       m_originalRxDataPointer(nullptr),
       m_protocolData{},
-      m_protocol(config),
-      m_switchSA(SWITCH_MIDDLE),
-      m_switchSB(SWITCH_UP),
-      m_switchSC(SWITCH_UP),
-      m_switchSD(SWITCH_MIDDLE),
+      m_config(config),
+      m_switchSA(SWITCH_UP),
+      m_switchSB(SWITCH_MIDDLE),
+      m_switchSC(SWITCH_MIDDLE),
+      m_switchSD(SWITCH_UP),
       m_lastSwitchSA(SWITCH_MIDDLE),
       m_lastSwitchSB(SWITCH_UP),
       m_lastSwitchSC(SWITCH_UP),
@@ -214,7 +212,7 @@ ET08ARemoteControl::ET08ARemoteControl(Config config, fp32 stickDeadZone)
 
 void ET08ARemoteControl::receiveRxDataFromISR(const uint8_t *data)
 {
-    m_originalRxDataPointer = (RawPacket *)data;
+    m_originalRxDataPointer = (ET08ARawPacket *)data;
     m_uartRxTimestamp       = HAL_GetTick();
     m_isConnected           = true;
     m_isDecodeCompleted     = false;
@@ -235,7 +233,7 @@ void ET08ARemoteControl::decodeRxData()
 
     if (m_originalRxDataPointer->startByte != 0x0F) return;
 
-    m_protocol.parse(m_originalRxDataPointer->data, m_protocolData);
+    parseET08AProtocol(m_originalRxDataPointer->data, m_protocolData);
 
     m_rightStickX = (m_protocolData.rightStickX - 1024) / 660.0f;
     m_rightStickY = (m_protocolData.rightStickY - 1024) / 660.0f;
@@ -300,4 +298,82 @@ void ET08ARemoteControl::updateEvent()
         m_switchSD = SWITCH_DOWN;
     }
     m_eventSD      = judgeSwitchStatus(m_switchSD, m_lastSwitchSD);
+}
+
+/******************************************************************************
+ *                           ET08A协议辅助函数实现
+ ******************************************************************************/
+
+ /*
+    @brief ET08AConfig 默认构造函数，设置默认通道映射
+*/
+
+ET08ARemoteControl::Config::Config()
+    : rightStickJ1X(ET08AChannelIndex::CH_1),
+      rightStickJ2Y(ET08AChannelIndex::CH_3),
+      leftStickJ3Y(ET08AChannelIndex::CH_2),
+      leftStickJ4X(ET08AChannelIndex::CH_4),
+      switchSA(ET08AChannelIndex::CH_5),
+      switchSB(ET08AChannelIndex::CH_NONE),
+      switchSC(ET08AChannelIndex::CH_NONE),
+      switchSD(ET08AChannelIndex::CH_6),
+      knobLD(ET08AChannelIndex::CH_7),
+      knobRD(ET08AChannelIndex::CH_8),
+      trimmerT1(ET08AChannelIndex::CH_NONE),
+      trimmerT2(ET08AChannelIndex::CH_NONE),
+      trimmerT3(ET08AChannelIndex::CH_NONE),
+      trimmerT4(ET08AChannelIndex::CH_NONE)
+{
+}
+
+/*
+    @brief 解析ET08A遥控器协议数据
+    @param buffer 原始协议数据缓冲区指针
+*/
+
+void ET08ARemoteControl::parseET08AProtocol(const uint8_t *buffer, ET08AProtocolData &out) const
+{
+    if (buffer == nullptr) return;
+
+    std::uint16_t temp_ch[16];
+
+    temp_ch[0]  = ((buffer[0] | buffer[1] << 8) & 0x07FF);
+    temp_ch[1]  = ((buffer[1] >> 3 | buffer[2] << 5) & 0x07FF);
+    temp_ch[2]  = ((buffer[2] >> 6 | buffer[3] << 2 | buffer[4] << 10) & 0x07FF);
+    temp_ch[3]  = ((buffer[4] >> 1 | buffer[5] << 7) & 0x07FF);
+    temp_ch[4]  = ((buffer[5] >> 4 | buffer[6] << 4) & 0x07FF);
+    temp_ch[5]  = ((buffer[6] >> 7 | buffer[7] << 1 | buffer[8] << 9) & 0x07FF);
+    temp_ch[6]  = ((buffer[8] >> 2 | buffer[9] << 6) & 0x07FF);
+    temp_ch[7]  = ((buffer[9] >> 5 | buffer[10] << 3) & 0x07FF);
+    temp_ch[8]  = ((buffer[11] | buffer[12] << 8) & 0x07FF);
+    temp_ch[9]  = ((buffer[12] >> 3 | buffer[13] << 5) & 0x07FF);
+    temp_ch[10] = ((buffer[13] >> 6 | buffer[14] << 2 | buffer[15] << 10) & 0x07FF);
+    temp_ch[11] = ((buffer[15] >> 1 | buffer[16] << 7) & 0x07FF);
+    temp_ch[12] = ((buffer[16] >> 4 | buffer[17] << 4) & 0x07FF);
+    temp_ch[13] = ((buffer[17] >> 7 | buffer[18] << 1 | buffer[19] << 9) & 0x07FF);
+    temp_ch[14] = ((buffer[19] >> 2 | buffer[20] << 6) & 0x07FF);
+    temp_ch[15] = ((buffer[20] >> 5 | buffer[21] << 3) & 0x07FF);
+
+    // 根据配置映射通道数据
+    auto getChannelValue = [&temp_ch](ET08AChannelIndex index) -> uint16_t {
+        return (index == ET08AChannelIndex::CH_NONE) ? 1024 : temp_ch[static_cast<uint8_t>(index)];
+    };
+
+    out.rightStickX = getChannelValue(m_config.rightStickJ1X);
+    out.rightStickY = getChannelValue(m_config.rightStickJ2Y);
+    out.leftStickX  = getChannelValue(m_config.leftStickJ4X);
+    out.leftStickY  = getChannelValue(m_config.leftStickJ3Y);
+
+    out.switchSA = getChannelValue(m_config.switchSA);
+    out.switchSB = getChannelValue(m_config.switchSB);
+    out.switchSC = getChannelValue(m_config.switchSC);
+    out.switchSD = getChannelValue(m_config.switchSD);
+
+    out.knobLD = getChannelValue(m_config.knobLD);
+    out.knobRD = getChannelValue(m_config.knobRD);
+
+    out.trimmerT1 = getChannelValue(m_config.trimmerT1);
+    out.trimmerT2 = getChannelValue(m_config.trimmerT2);
+    out.trimmerT3 = getChannelValue(m_config.trimmerT3);
+    out.trimmerT4 = getChannelValue(m_config.trimmerT4);
 }
