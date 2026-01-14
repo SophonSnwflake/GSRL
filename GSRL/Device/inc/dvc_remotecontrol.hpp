@@ -300,10 +300,10 @@ public:
         ET08AChannelIndex rightStickJ2Y = ET08AChannelIndex::CH_3;
         ET08AChannelIndex leftStickJ3Y  = ET08AChannelIndex::CH_2;
         ET08AChannelIndex leftStickJ4X  = ET08AChannelIndex::CH_4;
-        ET08AChannelIndex switchSA      = ET08AChannelIndex::CH_5;
-        ET08AChannelIndex switchSB      = ET08AChannelIndex::CH_NONE;
-        ET08AChannelIndex switchSC      = ET08AChannelIndex::CH_NONE;
-        ET08AChannelIndex switchSD      = ET08AChannelIndex::CH_6;
+        ET08AChannelIndex switchSA      = ET08AChannelIndex::CH_NONE;
+        ET08AChannelIndex switchSB      = ET08AChannelIndex::CH_5;
+        ET08AChannelIndex switchSC      = ET08AChannelIndex::CH_6;
+        ET08AChannelIndex switchSD      = ET08AChannelIndex::CH_NONE;
         ET08AChannelIndex knobLD        = ET08AChannelIndex::CH_7;
         ET08AChannelIndex knobRD        = ET08AChannelIndex::CH_8;
         ET08AChannelIndex trimmerT1     = ET08AChannelIndex::CH_NONE;

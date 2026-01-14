@@ -287,7 +287,6 @@ void ET08ARemoteControl::receiveRxDataFromISR(const uint8_t *data)
 {
     m_originalRxDataPointer = (ET08ARawPacket *)data;
     m_uartRxTimestamp       = HAL_GetTick();
-    m_isConnected           = true;
     m_isDecodeCompleted     = false;
 }
 
@@ -298,15 +297,16 @@ void ET08ARemoteControl::receiveRxDataFromISR(const uint8_t *data)
 void ET08ARemoteControl::decodeRxData()
 {
     // 判断遥控器连接状态，若使用的数据过时超过100ms则认为遥控器断开
-    if (HAL_GetTick() - m_uartRxTimestamp > 100 || m_originalRxDataPointer == nullptr) {
+    if (HAL_GetTick() - m_uartRxTimestamp > 100 || m_originalRxDataPointer->startByte != 0x0F || m_originalRxDataPointer == nullptr) {
         m_isConnected = false;
         return;
     }
+    
+    // 遥控器掉线时stopByte为0x0F
+    m_isConnected = !(m_originalRxDataPointer->stopByte == 0x0F);
 
     // 解码遥控器数据, 每次接收数据仅解码一次
     if (m_isDecodeCompleted) return;
-
-    if (m_originalRxDataPointer->startByte != 0x0F) return;
 
     parseET08AProtocol(m_originalRxDataPointer->data, m_protocolData);
 
