@@ -32,7 +32,9 @@ protected:
     Vector3f m_magnet;
     Vector3f m_eulerAngle;
     fp32 m_quaternion[4];
-    bool m_isAhrsInited; // AHRS初始化完成标志
+    Vector3f m_motionAccelBodyFrame;  // 机体坐标系下的运动加速度
+    Vector3f m_motionAccelEarthFrame; // 大地坐标系下的运动加速度
+    bool m_isAhrsInited;              // AHRS初始化完成标志
 
 public:
     virtual ~AHRS() = default;
@@ -41,8 +43,8 @@ public:
     const Vector3f &update(const Vector3f &gyro, const Vector3f &accel, const Vector3f &magnet = Vector3f());
     virtual const Vector3f &getGyro() const;
     virtual const Vector3f &getAccel() const;
-    virtual const Vector3f &getMotionAccelBodyFrame() const = 0;
-    virtual const Vector3f &getMotionAccelEarthFrame() const = 0;
+    virtual const Vector3f &getMotionAccelBodyFrame() const;
+    virtual const Vector3f &getMotionAccelEarthFrame() const;
     const fp32 *getQuaternion() const;
     const Vector3f &getEulerAngle() const;
 
@@ -50,6 +52,8 @@ protected:
     AHRS();
     virtual void dataProcess() = 0;
     void convertQuaternionToEulerAngle();
+    void initQuaternion();
+    void calculateMotionAccel();
 };
 
 class Mahony : public AHRS
@@ -66,69 +70,73 @@ private:
     Vector3f m_accelFilterHistory[3]; // 0: oldest, 2: newest
     Vector3f m_accelFiltered;
     Vector3f m_accelFilterNum;
-    // 运动加速度相关
-    Vector3f m_motionAccelBodyFrame;  // 机体坐标系下的运动加速度
-    Vector3f m_motionAccelEarthFrame; // 大地坐标系下的运动加速度
 
 public:
-    Mahony(fp32 sampleFreq = 0.0f, Vector3f accelFilterNum = 0, fp32 Kp = 0.5f, fp32 Ki = 0.0f);
+    Mahony(fp32 sampleFreq = 0.0f, Vector3f accelFilterNum = 0, fp32 kp = 0.5f, fp32 ki = 0.0f);
     void reset() override;
     void init() override;
     const Vector3f &getAccel() const override;
-    const Vector3f &getMotionAccelBodyFrame() const override;
-    const Vector3f &getMotionAccelEarthFrame() const override;
 
 private:
     void dataProcess() override;
     void sixAxisProcess(fp32 gx, fp32 gy, fp32 gz, fp32 ax, fp32 ay, fp32 az);
     void nineAxisProcess(fp32 gx, fp32 gy, fp32 gz, fp32 ax, fp32 ay, fp32 az, fp32 mx, fp32 my, fp32 mz);
     void filterAccel();
-    void calculateMotionAccel();
 };
 
 /**
- * @brief 卡尔曼解算IMU类实现
+ * @brief 四元数扩展卡尔曼滤波(EKF)姿态解算类
+ * @details 使用6维状态向量(四元数4维 + 陀螺仪xy轴零偏2维)的EKF算法进行姿态解算,
+ *          包含完整的卡方检验自适应机制、发散保护、零偏协方差衰减(fading)、
+ *          自适应增益缩放及方向余弦加权等鲁棒性处理。
+ *          状态向量: [q0, q1, q2, q3, bias_x, bias_y]
+ *          观测向量: 归一化加速度计三轴数据
  */
-class Kalman_Quaternion_EKF : public AHRS
+class QuaternionEKF : public AHRS
 {
 private:
     // 初始化相关
     using KF = KalmanFilter<fp32, 6, 3, 0>;
-    KF myKalmanFilter;
-    uint8_t Initialized; // 初始化完成标志：0=未初始化，1=已初始化
+    KF m_kalmanFilter; // 卡尔曼滤波器实例
     // 采样频率相关
-    float m_sampleFreq;             // 手动输入的固定采样频率，不使用固定采样频率则给0
+    fp32 m_sampleFreq;              // 固定采样频率(Hz), 为0则使用DWT自动计算
     uint32_t m_lastUpdateTimestamp; // DWT计数器历史值
-    fp32 m_deltaTime;               // 实际采样周期
-    // 卡尔曼相关
-    float q[4];     // 四元数估计值
-    float Q1;       // 四元数更新过程噪声
-    float Q2;       // 陀螺仪零偏过程噪声
-    float R;        // 加速度计量测噪声
-    Vector3f Accel; // 加速度值
-    Vector3f Gyro;
-    Vector3f GyroBias; // 陀螺仪零偏
-    // 卡方检测及细节处理
-    float ChiSquareTestThreshold; // 卡方检验阈值
-    float accLPFcoef;             // 加速度计一阶低通滤波系数（0~1，越小滤得越重），默认0
-    bool isCheckChiSquare;        // 用户给出，判断是否检测卡方 1检测，0不检测
-    KF::StateMatrix FadingFactor; // 渐消因子矩阵
+    fp32 m_deltaTime;               // 实际采样周期(s)
+    // 卡尔曼噪声参数
+    fp32 m_quatProcessNoise; // 四元数更新过程噪声基准(Q矩阵)
+    fp32 m_biasProcessNoise; // 陀螺仪零偏过程噪声基准(Q矩阵)
+    fp32 m_measNoise;        // 加速度计量测噪声基准(R矩阵)
+    fp32 m_lambda;           // 衰减系数(fading factor), 防止零偏协方差过度收敛
+    // 滤波中间量
+    Vector3f m_accelFiltered; // 低通滤波后的加速度值
+    Vector3f m_gyroBias;      // 陀螺仪xy轴零偏估计
+    // 卡方检测与自适应机制
+    fp32 m_chiSquareThreshold;    // 卡方检验阈值
+    fp32 m_accLpfCoef;            // 加速度计一阶低通滤波时间常数(s), 0表示不滤波
+    bool m_isCheckChiSquare;      // 是否启用卡方检验
+    bool m_convergeFlag;          // 滤波器收敛标志
+    bool m_stableFlag;            // 载体静止稳定标志(角速度小且加速度接近重力)
+    uint32_t m_errorCount;        // 连续卡方检验失败计数(用于发散保护)
+    fp32 m_adaptiveGainScale;     // 自适应增益缩放因子
+    fp32 m_gyroNorm;              // 当前角速度向量范数
+    fp32 m_accelNorm;             // 当前加速度向量范数
+    Vector3f m_orientationCosine; // 预测重力方向与各轴的余弦角
 public:
-    Kalman_Quaternion_EKF(float sampleFreq      = 0.0f,  // 给定刷新频率，给0则自动识别
-                          float q1              = 1e-4f, // 四元数过程噪声基准
-                          float q2              = 1e-6f, // 零偏过程噪声基准
-                          float r               = 1e-2f, // 加计量测噪声基准
-                          float accLPF          = 0.2f,  // 加速度计一阶低通滤波系数（0~1，越小滤得越重），默认0
-                          bool isCheckChiSquare = 1);    // 是否启用卡方检验
+    QuaternionEKF(fp32 sampleFreq         = 0.0f,
+                  fp32 quatProcessNoise   = 10.0f,
+                  fp32 biasProcessNoise   = 0.001f,
+                  fp32 measNoise          = 1e6f,
+                  fp32 lambda             = 1.0f,
+                  fp32 accLpfCoef         = 0.0f,
+                  bool isCheckChiSquare   = true,
+                  fp32 chiSquareThreshold = 1e-8f);
 
-    // 复位
     void reset() override;
-    // 参数配置
-    void setChiSquareThreshold(float Chi); // 卡方检验阈值
+    void init() override;
 
 private:
     void dataProcess() override;
-    void EKFProcess(fp32 gx, fp32 gy, fp32 gz, fp32 ax, fp32 ay, fp32 az);
+    void ekfProcess(fp32 gx, fp32 gy, fp32 gz, fp32 ax, fp32 ay, fp32 az);
 };
 
 /* Exported constants --------------------------------------------------------*/

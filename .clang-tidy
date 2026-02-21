@@ -5,7 +5,7 @@
 # -altera-id-dependent-backward-branch: 排除Altera FPGA相关的向后分支检查
 # -altera-unroll-loops: 排除Altera循环展开检查
 # -android*: 排除所有Android相关检查
-# -bugprone-integer-division: 排除整数除法错误检查
+# -bugprone-easily-swappable-parameters: 排除易混淆参数检查
 # -cert-dcl50-cpp: 排除CERT DCL50-CPP检查（函数不应定义为内联）
 # -cert-env33-c: 排除CERT ENV33-C检查（不应调用system()）
 # -cert-err34-c: 排除CERT ERR34-C检查（检测并处理函数错误）
@@ -14,13 +14,9 @@
 # -cert-msc30-c: 排除CERT MSC30-C检查（不应依赖随机数种子）
 # -cert-msc50-cpp: 排除CERT MSC50-CPP检查（不应使用伪随机数）
 # -clang-analyzer-core.CallAndMessage: 排除函数调用和消息传递分析
-# -clang-analyzer-core.NullDereference: 排除空指针解引用分析
-# -clang-analyzer-core.UndefinedBinaryOperatorResult: 排除未定义二元操作符分析
-# -clang-analyzer-core.uninitialized.Assign: 排除未初始化变量赋值分析
 # -clang-analyzer-core.VLASize: 排除变长数组大小分析
 # -clang-analyzer-cplusplus.NewDelete: 排除C++ new/delete分析
 # -clang-analyzer-cplusplus.NewDeleteLeaks: 排除C++ new/delete内存泄漏分析
-# -clang-analyzer-deadcode.DeadStores: 排除死存储分析
 # -clang-analyzer-optin.cplusplus.VirtualCall: 排除虚函数调用分析
 # -clang-analyzer-optin.performance.Padding: 排除结构体填充分析
 # -clang-analyzer-security.FloatLoopCounter: 排除浮点循环计数器安全检查
@@ -75,32 +71,28 @@
 # -misc-incorrect-roundings: 排除错误舍入检查
 # -misc-macro-parentheses: 排除宏括号检查
 # -misc-non-private-member-variables-in-classes: 排除类中非私有成员变量检查
-# -misc-redundant-expression: 排除冗余表达式检查
 # -misc-unconventional-assign-operator: 排除非传统赋值操作符检查
 # -misc-unused-parameters: 排除未使用参数检查
 # -modernize-deprecated-headers: 排除废弃头文件现代化检查
-# -modernize-loop-convert: 排除循环转换现代化检查
 # -modernize-pass-by-value: 排除按值传递现代化检查
 # -modernize-raw-string-literal: 排除原始字符串字面量现代化检查
 # -modernize-return-braced-init-list: 排除返回大括号初始化列表现代化检查
 # -modernize-use-auto: 排除使用auto现代化检查
 # -modernize-use-bool-literals: 排除布尔字面量现代化检查
 # -modernize-use-default-member-init: 排除默认成员初始化现代化检查
-# -modernize-use-equals-default: 排除使用equals default现代化检查
-# -modernize-use-equals-delete: 排除使用equals delete现代化检查
-# -modernize-use-override: 排除使用override现代化检查
+# -modernize-use-nodiscard: 排除nodiscard属性现代化检查
 # -modernize-use-trailing-return-type: 排除尾随返回类型现代化检查
 # -modernize-use-using: 排除使用using现代化检查
 # -performance-inefficient-string-concatenation: 排除低效字符串连接性能检查
 # -readability-avoid-const-params-in-decls: 排除声明中避免const参数检查
+# -readability-braces-around-statements: 排除语句体强制加大括号检查
 # -readability-container-size-empty: 排除容器大小空检查
-# -readability-else-after-return: 排除return后else检查
 # -readability-function-size: 排除函数大小可读性检查
 # -readability-implicit-bool-cast: 排除隐式布尔转换检查
 # -readability-implicit-bool-conversion: 排除隐式布尔转换检查
-# -readability-inconsistent-declaration-parameter-name: 排除声明参数名不一致检查
+# -readability-isolate-declaration: 排除隔离声明检查
 # -readability-named-parameter: 排除命名参数检查
-# -readability-non-const-parameter: 排除非const参数检查
+# -readability-math-missing-parentheses: 排除数学表达式缺少括号检查
 # -readability-redundant-declaration: 排除冗余声明检查
 # -readability-static-accessed-through-instance: 排除通过实例访问静态成员检查
 # -readability-static-definition-in-anonymous-namespace: 排除匿名命名空间中静态定义检查
@@ -113,7 +105,7 @@ Checks: >-
   -altera-id-dependent-backward-branch,
   -altera-unroll-loops,
   -android*,
-  -bugprone-integer-division,
+  -bugprone-easily-swappable-parameters,
   -cert-dcl50-cpp,
   -cert-env33-c,
   -cert-err34-c,
@@ -122,13 +114,9 @@ Checks: >-
   -cert-msc30-c,
   -cert-msc50-cpp,
   -clang-analyzer-core.CallAndMessage,
-  -clang-analyzer-core.NullDereference,
-  -clang-analyzer-core.UndefinedBinaryOperatorResult,
-  -clang-analyzer-core.uninitialized.Assign,
   -clang-analyzer-core.VLASize,
   -clang-analyzer-cplusplus.NewDelete,
   -clang-analyzer-cplusplus.NewDeleteLeaks,
-  -clang-analyzer-deadcode.DeadStores,
   -clang-analyzer-optin.cplusplus.VirtualCall,
   -clang-analyzer-optin.performance.Padding,
   -clang-analyzer-security.FloatLoopCounter,
@@ -183,33 +171,29 @@ Checks: >-
   -misc-incorrect-roundings,
   -misc-macro-parentheses,
   -misc-non-private-member-variables-in-classes,
-  -misc-redundant-expression,
   -misc-unconventional-assign-operator,
   -misc-unused-parameters,
   -modernize-deprecated-headers,
-  -modernize-loop-convert,
   -modernize-pass-by-value,
   -modernize-raw-string-literal,
   -modernize-return-braced-init-list,
   -modernize-use-auto,
   -modernize-use-bool-literals,
   -modernize-use-default-member-init,
-  -modernize-use-equals-default,
-  -modernize-use-equals-delete,
-  -modernize-use-override,
+  -modernize-use-nodiscard,
   -modernize-use-trailing-return-type,
   -modernize-use-using,
   -modernize-use-trailing-return-type,
   -performance-inefficient-string-concatenation,
   -readability-avoid-const-params-in-decls,
+  -readability-braces-around-statements,
   -readability-container-size-empty,
-  -readability-else-after-return,
   -readability-function-size,
   -readability-implicit-bool-cast,
   -readability-implicit-bool-conversion,
-  -readability-inconsistent-declaration-parameter-name,
+  -readability-isolate-declaration,
   -readability-named-parameter,
-  -readability-non-const-parameter,
+  -readability-math-missing-parentheses,
   -readability-redundant-declaration,
   -readability-static-accessed-through-instance,
   -readability-static-definition-in-anonymous-namespace

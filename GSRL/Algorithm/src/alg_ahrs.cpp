@@ -38,14 +38,17 @@
  */
 void AHRS::reset()
 {
-    m_gyro          = 0;
-    m_accel         = 0;
-    m_magnet        = 0;
-    m_eulerAngle    = 0;
-    m_quaternion[0] = 1.0f;
-    m_quaternion[1] = 0.0f;
-    m_quaternion[2] = 0.0f;
-    m_quaternion[3] = 0.0f;
+    m_gyro                  = 0;
+    m_accel                 = 0;
+    m_magnet                = 0;
+    m_eulerAngle            = 0;
+    m_motionAccelBodyFrame  = 0;
+    m_motionAccelEarthFrame = 0;
+    m_quaternion[0]         = 1.0f;
+    m_quaternion[1]         = 0.0f;
+    m_quaternion[2]         = 0.0f;
+    m_quaternion[3]         = 0.0f;
+    m_isAhrsInited          = false;
 }
 
 /**
@@ -63,11 +66,13 @@ const AHRS::Vector3f &AHRS::update(const Vector3f &gyro, const Vector3f &accel, 
     m_accel  = accel;
     m_magnet = magnet;
     if (!m_isAhrsInited) {
-        init(); // AHRS初始化
+        initQuaternion(); // 根据传感器数据初始化四元数
+        init();           // 子类特定初始化(纯虚函数)
         m_isAhrsInited = true;
     }
     taskENTER_CRITICAL(); // 进入临界区, 禁止任务切换
     dataProcess();
+    calculateMotionAccel();
     convertQuaternionToEulerAngle();
     taskEXIT_CRITICAL(); // 退出临界区, 允许任务切换
     return m_eulerAngle;
@@ -89,6 +94,24 @@ const AHRS::Vector3f &AHRS::getGyro() const
 const AHRS::Vector3f &AHRS::getAccel() const
 {
     return m_accel;
+}
+
+/**
+ * @brief 获取机体坐标系下的运动加速度
+ * @return const Vector3f& 机体坐标系下的运动加速度
+ */
+const AHRS::Vector3f &AHRS::getMotionAccelBodyFrame() const
+{
+    return m_motionAccelBodyFrame;
+}
+
+/**
+ * @brief 获取大地坐标系下的运动加速度
+ * @return const Vector3f& 大地坐标系下的运动加速度
+ */
+const AHRS::Vector3f &AHRS::getMotionAccelEarthFrame() const
+{
+    return m_motionAccelEarthFrame;
 }
 
 /**
@@ -114,7 +137,7 @@ const AHRS::Vector3f &AHRS::getEulerAngle() const
  * @note 初始化成员变量
  */
 AHRS::AHRS()
-    : m_gyro(), m_accel(), m_magnet(), m_eulerAngle(), m_isAhrsInited(false)
+    : m_isAhrsInited(false)
 {
     m_quaternion[0] = 1.0f; // 初始化四元数为[1, 0, 0, 0]
     m_quaternion[1] = 0.0f;
@@ -142,14 +165,152 @@ void AHRS::convertQuaternionToEulerAngle()
     // Pitch (y轴旋转) - 绕Y轴旋转的角度
     // 处理万向锁问题，确保结果在[-π/2, π/2]范围内
     fp32 sinp = 2.0f * (q0 * q2 - q3 * q1);
-    if (fabsf(sinp) >= 1)
+    if (fabsf(sinp) >= 1) {
         m_eulerAngle.y = copysignf(MATH_PI / 2, sinp); // 使用copysignf确保正确的符号
-    else
+    } else {
         m_eulerAngle.y = asinf(sinp);
+    }
 
     // Yaw (z轴旋转) - 绕Z轴旋转的角度
     m_eulerAngle.z = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3));
 }
+
+/**
+ * @brief 根据传感器数据初始化四元数
+ * @note 有磁力计时使用TRIAD方法(加速度+磁力计)构建完整旋转矩阵,
+ *       无磁力计时仅用加速度对齐重力方向(yaw设为0)
+ * @note 在首次update()中、子类init()之前调用, 此时m_accel和m_magnet已就绪
+ */
+void AHRS::initQuaternion()
+{
+    // 归一化加速度计数据, 得到重力方向单位向量
+    fp32 recipNorm = GSRLMath::invSqrt(m_accel.x * m_accel.x + m_accel.y * m_accel.y + m_accel.z * m_accel.z);
+    fp32 ax        = m_accel.x * recipNorm;
+    fp32 ay        = m_accel.y * recipNorm;
+    fp32 az        = m_accel.z * recipNorm;
+
+    bool hasMag = m_magnet.x != 0.0f || m_magnet.y != 0.0f || m_magnet.z != 0.0f;
+
+    if (hasMag) {
+        // 九轴初始化: TRIAD方法 + Shepperd四元数提取
+        recipNorm = GSRLMath::invSqrt(m_magnet.x * m_magnet.x + m_magnet.y * m_magnet.y + m_magnet.z * m_magnet.z);
+        fp32 mx   = m_magnet.x * recipNorm;
+        fp32 my   = m_magnet.y * recipNorm;
+        fp32 mz   = m_magnet.z * recipNorm;
+
+        // East = mag × accel
+        fp32 ex   = my * az - mz * ay;
+        fp32 ey   = mz * ax - mx * az;
+        fp32 ez   = mx * ay - my * ax;
+        recipNorm = GSRLMath::invSqrt(ex * ex + ey * ey + ez * ez);
+        ex *= recipNorm;
+        ey *= recipNorm;
+        ez *= recipNorm;
+
+        // North = accel × East
+        fp32 nx = ay * ez - az * ey;
+        fp32 ny = az * ex - ax * ez;
+        fp32 nz = ax * ey - ay * ex;
+
+        // 旋转矩阵 R (NED→Body, 行优先)
+        fp32 R[9] = {nx, ny, nz, ex, ey, ez, ax, ay, az};
+
+        // Shepperd方法: 旋转矩阵→四元数
+        fp32 trace = R[0] + R[4] + R[8];
+        if (trace > 0.0f) {
+            fp32 s          = sqrtf(trace + 1.0f);
+            m_quaternion[0] = s * 0.5f;
+            s               = 0.5f / s;
+            m_quaternion[1] = (R[7] - R[5]) * s;
+            m_quaternion[2] = (R[2] - R[6]) * s;
+            m_quaternion[3] = (R[3] - R[1]) * s;
+        } else if ((R[0] >= R[4]) && (R[0] >= R[8])) {
+            fp32 s          = sqrtf(1.0f + R[0] - R[4] - R[8]);
+            m_quaternion[1] = s * 0.5f;
+            s               = 0.5f / s;
+            m_quaternion[0] = (R[7] - R[5]) * s;
+            m_quaternion[2] = (R[1] + R[3]) * s;
+            m_quaternion[3] = (R[2] + R[6]) * s;
+        } else if (R[4] > R[8]) {
+            fp32 s          = sqrtf(1.0f + R[4] - R[0] - R[8]);
+            m_quaternion[2] = s * 0.5f;
+            s               = 0.5f / s;
+            m_quaternion[0] = (R[2] - R[6]) * s;
+            m_quaternion[1] = (R[1] + R[3]) * s;
+            m_quaternion[3] = (R[5] + R[7]) * s;
+        } else {
+            fp32 s          = sqrtf(1.0f + R[8] - R[0] - R[4]);
+            m_quaternion[3] = s * 0.5f;
+            s               = 0.5f / s;
+            m_quaternion[0] = (R[3] - R[1]) * s;
+            m_quaternion[1] = (R[2] + R[6]) * s;
+            m_quaternion[2] = (R[5] + R[7]) * s;
+        }
+    } else {
+        // 六轴初始化: 仅用加速度对齐重力方向, yaw = 0
+        fp32 roll  = atan2f(ay, az);
+        fp32 pitch = atan2f(-ax, sqrtf(ay * ay + az * az));
+
+        fp32 cr = cosf(roll * 0.5f);
+        fp32 sr = sinf(roll * 0.5f);
+        fp32 cp = cosf(pitch * 0.5f);
+        fp32 sp = sinf(pitch * 0.5f);
+        // yaw = 0 → cy = 1, sy = 0, ZYX欧拉角转四元数
+        m_quaternion[0] = cr * cp;
+        m_quaternion[1] = sr * cp;
+        m_quaternion[2] = cr * sp;
+        m_quaternion[3] = -sr * sp;
+    }
+
+    // 归一化四元数
+    recipNorm = GSRLMath::invSqrt(m_quaternion[0] * m_quaternion[0] +
+                                  m_quaternion[1] * m_quaternion[1] +
+                                  m_quaternion[2] * m_quaternion[2] +
+                                  m_quaternion[3] * m_quaternion[3]);
+    m_quaternion[0] *= recipNorm;
+    m_quaternion[1] *= recipNorm;
+    m_quaternion[2] *= recipNorm;
+    m_quaternion[3] *= recipNorm;
+}
+
+/**
+ * @brief 计算运动加速度
+ * @note 从m_accel中减去重力加速度分量, 得到机体坐标系下的运动加速度,
+ *       然后通过四元数旋转矩阵将其转换到大地坐标系
+ * @note 在dataProcess()执行完成后调用, 此时四元数已更新
+ */
+void AHRS::calculateMotionAccel()
+{
+    fp32 q0 = m_quaternion[0];
+    fp32 q1 = m_quaternion[1];
+    fp32 q2 = m_quaternion[2];
+    fp32 q3 = m_quaternion[3];
+
+    // 计算重力加速度在机体坐标系下的分量(单位向量)
+    fp32 gx = 2.0f * (q1 * q3 - q0 * q2);
+    fp32 gy = 2.0f * (q0 * q1 + q2 * q3);
+    fp32 gz = q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3;
+
+    // 从加速度计数据中减去重力分量, 得到机体坐标系下的运动加速度
+    constexpr fp32 GRAVITY   = 9.8f;
+    m_motionAccelBodyFrame.x = m_accel.x - gx * GRAVITY;
+    m_motionAccelBodyFrame.y = m_accel.y - gy * GRAVITY;
+    m_motionAccelBodyFrame.z = m_accel.z - gz * GRAVITY;
+
+    // 将机体坐标系下的运动加速度转换到大地坐标系
+    m_motionAccelEarthFrame.x = (q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3) * m_motionAccelBodyFrame.x +
+                                2.0f * (q1 * q2 - q0 * q3) * m_motionAccelBodyFrame.y +
+                                2.0f * (q1 * q3 + q0 * q2) * m_motionAccelBodyFrame.z;
+
+    m_motionAccelEarthFrame.y = 2.0f * (q1 * q2 + q0 * q3) * m_motionAccelBodyFrame.x +
+                                (q0 * q0 - q1 * q1 + q2 * q2 - q3 * q3) * m_motionAccelBodyFrame.y +
+                                2.0f * (q2 * q3 - q0 * q1) * m_motionAccelBodyFrame.z;
+
+    m_motionAccelEarthFrame.z = 2.0f * (q1 * q3 - q0 * q2) * m_motionAccelBodyFrame.x +
+                                2.0f * (q2 * q3 + q0 * q1) * m_motionAccelBodyFrame.y +
+                                (q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3) * m_motionAccelBodyFrame.z;
+}
+
 /******************************************************************************
  *                            Mahony类实现
  ******************************************************************************/
@@ -164,11 +325,10 @@ void AHRS::convertQuaternionToEulerAngle()
  * accelFilterNum为加速度计IIR低通滤波器系数, 默认为0表示使用大疆官方例程参数
  * Kp和Ki分别为比例和积分增益, 用于Mahony算法的PI补偿器
  */
-Mahony::Mahony(fp32 sampleFreq, Vector3f accelFilterNum, fp32 Kp, fp32 Ki)
-    : AHRS(), m_sampleFreq(sampleFreq), m_deltaTime(0), m_lastUpdateTimestamp(0), m_integralFBx(0), m_integralFBy(0), m_integralFBz(0), m_twoKi(2 * Ki), m_twoKp(2 * Kp), m_accelFilterHistory(), m_accelFiltered()
+Mahony::Mahony(fp32 sampleFreq, Vector3f accelFilterNum, fp32 kp, fp32 ki)
+    : m_sampleFreq(sampleFreq), m_deltaTime(0), m_lastUpdateTimestamp(0), m_integralFBx(0), m_integralFBy(0), m_integralFBz(0), m_twoKi(2 * ki), m_twoKp(2 * kp), m_accelFilterHistory()
 {
-    DWT_Init(); // 初始化DWT计时器, 用于不定频模式下的采样周期计算
-    if (accelFilterNum.dot(accelFilterNum)) {
+    if (accelFilterNum.x != 0.0f || accelFilterNum.y != 0.0f || accelFilterNum.z != 0.0f) {
         m_accelFilterNum = accelFilterNum; // 用户自定义滤波器参数
     } else {
         m_accelFilterNum.x = 1.929454039488895f; // 大疆官方例程滤波器参数
@@ -188,120 +348,33 @@ void Mahony::reset()
     m_integralFBy   = 0;
     m_integralFBz   = 0;
     m_accelFiltered = 0;
-    m_motionAccelBodyFrame = 0;
-    m_motionAccelEarthFrame = 0;
-    for (int i = 0; i < 3; i++) {
-        m_accelFilterHistory[i] = 0;
+    for (auto &i : m_accelFilterHistory) {
+        i = 0;
     }
 }
 
 /**
- * @brief 初始化AHRS姿态解算, 根据加速度计和磁力计数据初始化四元数
- * @param accel 加速度计数据
- * @param magnet 磁力计数据
+ * @brief 初始化Mahony姿态解算
  */
 void Mahony::init()
 {
-    // 归一化加速度计数据，得到重力方向单位向量（机体Z轴在大地坐标系中的方向）
-    fp32 recipNorm = GSRLMath::invSqrt(m_accel.x * m_accel.x + m_accel.y * m_accel.y + m_accel.z * m_accel.z);
-    fp32 ax = m_accel.x * recipNorm;
-    fp32 ay = m_accel.y * recipNorm;
-    fp32 az = m_accel.z * recipNorm;
+    // 四元数已由基类initQuaternion()初始化
 
-    // 归一化磁力计数据
-    recipNorm = GSRLMath::invSqrt(m_magnet.x * m_magnet.x + m_magnet.y * m_magnet.y + m_magnet.z * m_magnet.z);
-    fp32 mx = m_magnet.x * recipNorm;
-    fp32 my = m_magnet.y * recipNorm;
-    fp32 mz = m_magnet.z * recipNorm;
-
-    // 构建旋转矩阵 (从大地坐标系到机体坐标系的转换矩阵)
-    fp32 R[9]; // 按行优先存储: R[0]=R11, R[1]=R12, R[2]=R13, R[3]=R21, ...
-
-    // 计算东向(East)向量: east = mag × accel (在水平面上，指向东方)
-    fp32 ex = my * az - mz * ay;
-    fp32 ey = mz * ax - mx * az;
-    fp32 ez = mx * ay - my * ax;
-    
-    // 归一化东向向量
-    recipNorm = GSRLMath::invSqrt(ex * ex + ey * ey + ez * ez);
-    ex *= recipNorm;
-    ey *= recipNorm;
-    ez *= recipNorm;
-
-    // 计算北向(North)向量: north = accel × east
-    fp32 nx = ay * ez - az * ey;
-    fp32 ny = az * ex - ax * ez;
-    fp32 nz = ax * ey - ay * ex;
-
-    // 构建旋转矩阵 (NED到Body的转换矩阵)
-    // 第一行: 北向在机体坐标系中的分量
-    R[0] = nx;
-    R[1] = ny;
-    R[2] = nz;
-    // 第二行: 东向在机体坐标系中的分量
-    R[3] = ex;
-    R[4] = ey;
-    R[5] = ez;
-    // 第三行: 地向(Down)在机体坐标系中的分量
-    R[6] = ax;
-    R[7] = ay;
-    R[8] = az;
-
-    // ---- 使用Shepperd方法从旋转矩阵计算四元数 ----
-    
-    fp32 trace = R[0] + R[4] + R[8]; // 矩阵的迹
-    
-    if (trace > 0.0f) {
-        // w是最大的分量
-        fp32 s = sqrtf(trace + 1.0f);
-        m_quaternion[0] = s * 0.5f;
-        s = 0.5f / s;
-        m_quaternion[1] = (R[7] - R[5]) * s;
-        m_quaternion[2] = (R[2] - R[6]) * s;
-        m_quaternion[3] = (R[3] - R[1]) * s;
-    } else if ((R[0] >= R[4]) && (R[0] >= R[8])) {
-        // x是最大的分量
-        fp32 s = sqrtf(1.0f + R[0] - R[4] - R[8]);
-        m_quaternion[1] = s * 0.5f;
-        s = 0.5f / s;
-        m_quaternion[0] = (R[7] - R[5]) * s;
-        m_quaternion[2] = (R[1] + R[3]) * s;
-        m_quaternion[3] = (R[2] + R[6]) * s;
-    } else if (R[4] > R[8]) {
-        // y是最大的分量
-        fp32 s = sqrtf(1.0f + R[4] - R[0] - R[8]);
-        m_quaternion[2] = s * 0.5f;
-        s = 0.5f / s;
-        m_quaternion[0] = (R[2] - R[6]) * s;
-        m_quaternion[1] = (R[1] + R[3]) * s;
-        m_quaternion[3] = (R[5] + R[7]) * s;
-    } else {
-        // z是最大的分量
-        fp32 s = sqrtf(1.0f + R[8] - R[0] - R[4]);
-        m_quaternion[3] = s * 0.5f;
-        s = 0.5f / s;
-        m_quaternion[0] = (R[3] - R[1]) * s;
-        m_quaternion[1] = (R[2] + R[6]) * s;
-        m_quaternion[2] = (R[5] + R[7]) * s;
-    }
-
-    // 归一化四元数，保证数值稳定性
-    recipNorm = GSRLMath::invSqrt(m_quaternion[0] * m_quaternion[0] +
-                                   m_quaternion[1] * m_quaternion[1] +
-                                   m_quaternion[2] * m_quaternion[2] +
-                                   m_quaternion[3] * m_quaternion[3]);
-    m_quaternion[0] *= recipNorm;
-    m_quaternion[1] *= recipNorm;
-    m_quaternion[2] *= recipNorm;
-    m_quaternion[3] *= recipNorm;
-
-    // 从四元数计算欧拉角
-    convertQuaternionToEulerAngle();
+    DWT_Init(); // 初始化DWT计时器, 用于不定频模式下的采样周期计算
 
     // 初始化DWT计数器时间戳
     if (m_sampleFreq == 0.0f && DWT_IsInit()) {
         m_lastUpdateTimestamp = DWT_GetTimestamp();
     }
+}
+
+/**
+ * @brief 获取滤波后的加速度计数据
+ * @return const Vector3f& 滤波后的加速度计数据
+ */
+const Mahony::Vector3f &Mahony::getAccel() const
+{
+    return m_accelFiltered;
 }
 
 /**
@@ -313,11 +386,10 @@ void Mahony::dataProcess()
     // 加速度低通滤波
     filterAccel();
     // 计算采样周期
-    if (m_sampleFreq) {
+    if (m_sampleFreq > 0.0f) {
         m_deltaTime = 1.0f / m_sampleFreq; // 定频运行模式
     } else {
         m_deltaTime = DWT_GetDeltaTime(&m_lastUpdateTimestamp); // 不定频运行模式
-        GSRLMath::constrain(m_deltaTime, 0.1f);   // 限制采样周期在0.1s以内
     }
     // 选择姿态解算算法, 在磁力计数据无效时使用六轴融合算法
     if ((m_magnet.x == 0.0f) && (m_magnet.y == 0.0f) && (m_magnet.z == 0.0f)) {
@@ -325,8 +397,6 @@ void Mahony::dataProcess()
     } else {
         Mahony::nineAxisProcess(m_gyro.x, m_gyro.y, m_gyro.z, m_accelFiltered.x, m_accelFiltered.y, m_accelFiltered.z, m_magnet.x, m_magnet.y, m_magnet.z);
     }
-    // 计算运动加速度
-    calculateMotionAccel();
 }
 
 /**
@@ -348,7 +418,7 @@ void Mahony::sixAxisProcess(fp32 gx, fp32 gy, fp32 gz, fp32 ax, fp32 ay, fp32 az
 
     // Compute feedback only if accelerometer measurement valid (avoids NaN in accelerometer normalisation)
     // 只在加速度计数据有效时才进行运算
-    if (!((ax == 0.0f) && (ay == 0.0f) && (az == 0.0f))) {
+    if ((ax != 0.0f) || (ay != 0.0f) || (az != 0.0f)) {
 
         // Normalise accelerometer measurement
         // 将加速度计得到的实际重力加速度向量v单位化
@@ -446,7 +516,7 @@ void Mahony::nineAxisProcess(fp32 gx, fp32 gy, fp32 gz, fp32 ax, fp32 ay, fp32 a
 
     // Compute feedback only if accelerometer measurement valid (avoids NaN in accelerometer normalisation)
     // 只在加速度计数据有效时才进行运算
-    if (!((ax == 0.0f) && (ay == 0.0f) && (az == 0.0f))) {
+    if ((ax != 0.0f) || (ay != 0.0f) || (az != 0.0f)) {
 
         // Normalise accelerometer measurement
         // 将加速度计得到的实际重力加速度向量v单位化
@@ -568,344 +638,339 @@ void Mahony::filterAccel()
     m_accelFiltered = m_accelFilterHistory[2];
 }
 
-/**
- * @brief 获取滤波后的加速度计数据
- * @return const Vector3f& 滤波后的加速度计数据
- */
-const Mahony::Vector3f &Mahony::getAccel() const
-{
-    return m_accelFiltered;
-}
-
-/**
- * @brief 获取机体坐标系下的运动加速度
- * @return const Vector3f& 机体坐标系下的运动加速度
- */
-const Mahony::Vector3f &Mahony::getMotionAccelBodyFrame() const
-{
-    return m_motionAccelBodyFrame;
-}
-
-/**
- * @brief 获取大地坐标系下的运动加速度
- * @return const Vector3f& 大地坐标系下的运动加速度
- */
-const Mahony::Vector3f &Mahony::getMotionAccelEarthFrame() const
-{
-    return m_motionAccelEarthFrame;
-}
-
-/**
- * @brief 计算运动加速度
- * @note 从滤波后的加速度计数据中减去重力加速度分量,得到机体坐标系下的运动加速度
- *       然后通过四元数旋转矩阵将其转换到大地坐标系
- */
-void Mahony::calculateMotionAccel()
-{
-    // 提取四元数分量
-    fp32 q0 = m_quaternion[0];
-    fp32 q1 = m_quaternion[1];
-    fp32 q2 = m_quaternion[2];
-    fp32 q3 = m_quaternion[3];
-
-    // 计算重力加速度在机体坐标系下的分量(单位向量)
-    // 这是通过四元数旋转矩阵的第三列得到的(Z轴方向)
-    fp32 gx = 2.0f * (q1 * q3 - q0 * q2);
-    fp32 gy = 2.0f * (q0 * q1 + q2 * q3);
-    fp32 gz = q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3;
-
-    // 从滤波后的加速度计数据中减去重力分量,得到机体坐标系下的运动加速度
-    // 加速度计测量值包含了重力和运动加速度
-    // 假设重力加速度为9.8m/s^2
-    constexpr fp32 GRAVITY = 9.8f;
-    m_motionAccelBodyFrame.x = m_accelFiltered.x - gx * GRAVITY;
-    m_motionAccelBodyFrame.y = m_accelFiltered.y - gy * GRAVITY;
-    m_motionAccelBodyFrame.z = m_accelFiltered.z - gz * GRAVITY;
-
-    // 将机体坐标系下的运动加速度转换到大地坐标系
-    // 使用四元数旋转矩阵进行坐标变换
-    m_motionAccelEarthFrame.x = (q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3) * m_motionAccelBodyFrame.x +
-                                 2.0f * (q1 * q2 - q0 * q3) * m_motionAccelBodyFrame.y +
-                                 2.0f * (q1 * q3 + q0 * q2) * m_motionAccelBodyFrame.z;
-
-    m_motionAccelEarthFrame.y = 2.0f * (q1 * q2 + q0 * q3) * m_motionAccelBodyFrame.x +
-                                 (q0 * q0 - q1 * q1 + q2 * q2 - q3 * q3) * m_motionAccelBodyFrame.y +
-                                 2.0f * (q2 * q3 - q0 * q1) * m_motionAccelBodyFrame.z;
-
-    m_motionAccelEarthFrame.z = 2.0f * (q1 * q3 - q0 * q2) * m_motionAccelBodyFrame.x +
-                                 2.0f * (q2 * q3 + q0 * q1) * m_motionAccelBodyFrame.y +
-                                 (q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3) * m_motionAccelBodyFrame.z;
-}
-
 /******************************************************************************
- *                            卡尔曼EKF类实现
+ *                             QuaternionEKF类实现
  ******************************************************************************/
 
 /**
- * @brief Kalman滤波构造函数
- * @param sampleFreq 给定刷新频率，给0则自动识别
- * @param q1 四元数过程噪声基准
- * @param q2 零偏过程噪声基准
- * @param r 加计量测噪声基准
- * @param accLPF 加速度计一阶低通滤波系数（0~1，越小滤得越重），默认0
+ * @brief QuaternionEKF构造函数
+ * @param sampleFreq 给定刷新频率(Hz), 给0则使用DWT自动识别
+ * @param quatProcessNoise 四元数过程噪声基准(典型值10)
+ * @param biasProcessNoise 陀螺仪零偏过程噪声基准(典型值0.001)
+ * @param measNoise 加速度计量测噪声基准(典型值1e6)
+ * @param lambda 衰减系数(0~1], 防止零偏协方差过度收敛, 1为不衰减(典型值0.9996)
+ * @param accLpfCoef 加速度计一阶低通滤波时间常数(s), 0表示不滤波
+ * @param isCheckChiSquare 是否启用卡方检验
+ * @param chiSquareThreshold 卡方检验阈值, 卡方值大于此阈值时忽略加速度观测(典型值1e-8)
+ * @note 仅保存参数, KF矩阵的初始化在init()中完成（首次update时由基类触发）
  */
-Kalman_Quaternion_EKF::Kalman_Quaternion_EKF(float sampleFreq,
-                                             float q1,
-                                             float q2,
-                                             float r,
-                                             float accLPF,
-                                             bool isCheckChiSquare)
-    : AHRS(),
-      Initialized(0),
-      m_sampleFreq(sampleFreq),
-      m_deltaTime(0.0f),
+QuaternionEKF::QuaternionEKF(fp32 sampleFreq,
+                             fp32 quatProcessNoise,
+                             fp32 biasProcessNoise,
+                             fp32 measNoise,
+                             fp32 lambda,
+                             fp32 accLpfCoef,
+                             bool isCheckChiSquare,
+                             fp32 chiSquareThreshold)
+    : m_sampleFreq(sampleFreq),
       m_lastUpdateTimestamp(0),
-      q{1.f, 0.f, 0.f, 0.f},
-      GyroBias{0.f, 0.f, 0.f},
-      Gyro{0.f, 0.f, 0.f},
-      Accel{0.f, 0.f, 0.f},
-      accLPFcoef(accLPF),
-      Q1(q1), Q2(q2),
-      R(r),
-      isCheckChiSquare(isCheckChiSquare)
+      m_deltaTime(0.0f),
+      m_quatProcessNoise(quatProcessNoise),
+      m_biasProcessNoise(biasProcessNoise),
+      m_measNoise(measNoise),
+      m_lambda(lambda > 1.0f ? 1.0f : lambda),
+      m_chiSquareThreshold(chiSquareThreshold),
+      m_accLpfCoef(accLpfCoef),
+      m_isCheckChiSquare(isCheckChiSquare),
+      m_convergeFlag(false),
+      m_stableFlag(false),
+      m_errorCount(0),
+      m_adaptiveGainScale(1.0f),
+      m_gyroNorm(0.0f),
+      m_accelNorm(0.0f) {}
+
+/**
+ * @brief 重置QuaternionEKF姿态解算相关数据
+ */
+void QuaternionEKF::reset()
+{
+    AHRS::reset();
+    m_kalmanFilter.reset();
+    m_accelFiltered     = 0;
+    m_gyroBias          = 0;
+    m_orientationCosine = 0;
+    m_convergeFlag      = false;
+    m_stableFlag        = false;
+    m_errorCount        = 0;
+    m_adaptiveGainScale = 1.0f;
+    m_gyroNorm          = 0.0f;
+    m_accelNorm         = 0.0f;
+}
+/**
+ * @brief 初始化EKF姿态解算
+ * @note 在第一次update被调用时由基类触发执行，完成DWT、KF矩阵初始化
+ */
+void QuaternionEKF::init()
 {
     DWT_Init();
+
+    if (m_sampleFreq == 0.0f && DWT_IsInit()) {
+        m_lastUpdateTimestamp = DWT_GetTimestamp();
+    }
+
     using M = KF;
-    // 初始化状态转移矩阵
-    M::StateMatrix F = M::StateMatrix::Identity();
-    myKalmanFilter.setTransitionMatrix(F);
 
-    // 初始化测量矩阵
-    M::ObsMatrix H = M::ObsMatrix::Zero();
-    myKalmanFilter.setObservationMatrix(H);
+    m_kalmanFilter.setTransitionMatrix(M::StateMatrix::Identity());
+    m_kalmanFilter.setObservationMatrix(M::ObsMatrix::Zero());
+    m_kalmanFilter.setProcessNoise(M::StateMatrix::Zero());
+    m_kalmanFilter.setMeasurementNoise(M::MeasMatrix::Zero());
 
-    // 赋值预测误差Q
-    M::StateMatrix Qm = M::StateMatrix::Zero();
-    Qm.diagonal().template segment<4>(0).setConstant(Q1);
-    Qm.diagonal().template segment<2>(4).setConstant(Q2);
-    myKalmanFilter.setProcessNoise(Qm);
+    M::StateMatrix P = M::StateMatrix::Constant(0.1f);
+    P.diagonal().setConstant(1.0f);
+    m_kalmanFilter.setCovariance(P);
 
-    // 赋值观测误差R
-    M::MeasMatrix Rm = M::MeasMatrix::Identity() * R;
-    myKalmanFilter.setMeasurementNoise(Rm);
-
-    // 赋值初始协方差
-    M::StateMatrix P = M::StateMatrix::Identity();
-    P.diagonal().template segment<4>(0).setConstant(1e5f);
-    P.diagonal().template segment<2>(4).setConstant(1e2f);
-    myKalmanFilter.setCovariance(P);
-
-    // 设置初始状态
+    // 将基类initQuaternion()已初始化的四元数写入EKF状态向量
     M::StateVector x0;
-    x0 << 1.f, 0.f, 0.f, 0.f, 0.f, 0.f;
-    myKalmanFilter.setState(x0);
+    x0 << m_quaternion[0], m_quaternion[1], m_quaternion[2], m_quaternion[3], 0.f, 0.f;
+    m_kalmanFilter.setState(x0);
 
-    Initialized = 1;
+    // 初始化低通滤波器状态
+    m_accelFiltered = m_accel;
 }
 
 /**
- * @brief Kalman滤波数据处理函数
- * @note 默认走自适应频率
+ * @brief QuaternionEKF姿态解算数据处理
  */
-void Kalman_Quaternion_EKF::dataProcess()
+void QuaternionEKF::dataProcess()
 {
-    if (m_sampleFreq) {
+    if (m_sampleFreq > 0.0f) {
         m_deltaTime = 1.0f / m_sampleFreq;
     } else {
         m_deltaTime = DWT_GetDeltaTime(&m_lastUpdateTimestamp);
-        GSRLMath::constrain(m_deltaTime, 0.1f);
     }
 
-    // 六轴EKF
-    EKFProcess(m_gyro.x, m_gyro.y, m_gyro.z,
-               m_accel.x, m_accel.y, m_accel.z);
+    ekfProcess(m_gyro.x, m_gyro.y, m_gyro.z, m_accel.x, m_accel.y, m_accel.z);
 }
 
 /**
- * @brief KalmanEKF滤波数据处理函数
+ * @brief EKF姿态解算核心函数
+ * @param gx 陀螺仪x轴数据(rad/s)
+ * @param gy 陀螺仪y轴数据(rad/s)
+ * @param gz 陀螺仪z轴数据(rad/s)
+ * @param ax 加速度计x轴数据(m/s²)
+ * @param ay 加速度计y轴数据(m/s²)
+ * @param az 加速度计z轴数据(m/s²)
  */
-fp32 ChiSquare;
-void Kalman_Quaternion_EKF::EKFProcess(fp32 gx, fp32 gy, fp32 gz,
-                                       fp32 ax, fp32 ay, fp32 az)
+void QuaternionEKF::ekfProcess(fp32 gx, fp32 gy, fp32 gz, fp32 ax, fp32 ay, fp32 az)
 {
-    using M = KF;
+    using M       = KF;
+    const fp32 dt = m_deltaTime;
 
-    // ---------- 1) 低通处理加速度（简单一阶 IIR） ----------
-    // accLPFcoef 越接近 1 越平滑
-    Accel.x = accLPFcoef * Accel.x + (1.0f - accLPFcoef) * ax;
-    Accel.y = accLPFcoef * Accel.y + (1.0f - accLPFcoef) * ay;
-    Accel.z = accLPFcoef * Accel.z + (1.0f - accLPFcoef) * az;
+    // 减去零偏得到校正后角速度
+    fp32 wx = gx - m_gyroBias.x;
+    fp32 wy = gy - m_gyroBias.y;
+    fp32 wz = gz - m_gyroBias.z;
 
-    // ---------- 2) 归一化加速度作为量测 ----------
-    fp32 a2 = Accel.x * Accel.x + Accel.y * Accel.y + Accel.z * Accel.z;
-    if (a2 < 1e-12f) {
-        return; // 量测无效
-    }
-    fp32 inv_an = GSRLMath::invSqrt(a2);
+    fp32 halfwxdt = 0.5f * wx * dt;
+    fp32 halfwydt = 0.5f * wy * dt;
+    fp32 halfwzdt = 0.5f * wz * dt;
 
-    M::MeasVector Measurement;
-    Measurement << Accel.x * inv_an, Accel.y * inv_an, Accel.z * inv_an;
-
-    // ---------- 3) 准备当前状态 ----------
-    M::StateVector stateVector = myKalmanFilter.getState();
-
-    fp32 q0 = stateVector(0),
-         q1 = stateVector(1),
-         q2 = stateVector(2),
-         q3 = stateVector(3);
-    fp32 bx = stateVector(4),
-         by = stateVector(5);
-
-    // ---------- 4) 构建过程模型线性化 F ----------
-    // 只估计 bx/by，gz 不减偏置
-    fp32 wx = gx - bx;
-    fp32 wy = gy - by;
-    fp32 wz = gz;
-
-    // Ω(ω)
+    // 构建状态转移矩阵F
     M::StateMatrix F = M::StateMatrix::Identity();
-    // 构造 4x4 的 Fqq
-    Eigen::Matrix<fp32, 4, 4> Omega;
+    F(0, 1)          = -halfwxdt;
+    F(0, 2)          = -halfwydt;
+    F(0, 3)          = -halfwzdt;
+    F(1, 0)          = halfwxdt;
+    F(1, 2)          = halfwzdt;
+    F(1, 3)          = -halfwydt;
+    F(2, 0)          = halfwydt;
+    F(2, 1)          = -halfwzdt;
+    F(2, 3)          = halfwxdt;
+    F(3, 0)          = halfwzdt;
+    F(3, 1)          = halfwydt;
+    F(3, 2)          = -halfwxdt;
+    m_kalmanFilter.setTransitionMatrix(F);
 
-    //-----分界线
-    Omega << 0, -wx, -wy, -wz,
-        wx, 0, wz, -wy,
-        wy, -wz, 0, wx,
-        wz, wy, -wx, 0;
+    // 加速度一阶低通滤波
+    fp32 lpfDenom = dt + m_accLpfCoef;
+    if (lpfDenom > 1e-12f) {
+        m_accelFiltered.x = m_accelFiltered.x * m_accLpfCoef / lpfDenom + ax * dt / lpfDenom;
+        m_accelFiltered.y = m_accelFiltered.y * m_accLpfCoef / lpfDenom + ay * dt / lpfDenom;
+        m_accelFiltered.z = m_accelFiltered.z * m_accLpfCoef / lpfDenom + az * dt / lpfDenom;
+    }
 
-    Eigen::Matrix<fp32, 4, 4> Fqq = Eigen::Matrix<fp32, 4, 4>::Identity() + 0.5f * m_deltaTime * Omega;
+    // 归一化加速度作为量测
+    fp32 accelInvNorm = GSRLMath::invSqrt(
+        m_accelFiltered.x * m_accelFiltered.x +
+        m_accelFiltered.y * m_accelFiltered.y +
+        m_accelFiltered.z * m_accelFiltered.z);
 
-    // 写入 F 的 q-q 块
-    F.template block<4, 4>(0, 0) = Fqq;
+    M::MeasVector measurement;
+    measurement << m_accelFiltered.x * accelInvNorm,
+        m_accelFiltered.y * accelInvNorm,
+        m_accelFiltered.z * accelInvNorm;
 
-    // q 对 bx/by 的偏导（4x2）
+    // 计算载体运动状态(用于发散保护)
+    m_gyroNorm  = 1.0f / GSRLMath::invSqrt(wx * wx + wy * wy + wz * wz);
+    m_accelNorm = 1.0f / accelInvNorm;
 
-    Eigen::Matrix<fp32, 4, 4> dO_dwx, dO_dwy;
-    dO_dwx << 0, -1, 0, 0,
-        1, 0, 0, 0,
-        0, 0, 0, 1,
-        0, 0, -1, 0;
+    if (m_gyroNorm < 0.3f && m_accelNorm > 9.3f && m_accelNorm < 10.3f) {
+        m_stableFlag = true;
+    } else {
+        m_stableFlag = false;
+    }
 
-    dO_dwy << 0, 0, -1, 0,
-        0, 0, 0, -1,
-        1, 0, 0, 0,
-        0, 1, 0, 0;
+    // 动态设置过程噪声Q和量测噪声R
+    M::StateMatrix Qm = M::StateMatrix::Zero();
+    Qm(0, 0)          = m_quatProcessNoise * dt;
+    Qm(1, 1)          = m_quatProcessNoise * dt;
+    Qm(2, 2)          = m_quatProcessNoise * dt;
+    Qm(3, 3)          = m_quatProcessNoise * dt;
+    Qm(4, 4)          = m_biasProcessNoise * dt;
+    Qm(5, 5)          = m_biasProcessNoise * dt;
+    m_kalmanFilter.setProcessNoise(Qm);
 
-    Eigen::Matrix<fp32, 4, 1> qv;
-    qv << q0, q1, q2, q3;
+    M::MeasMatrix Rm = M::MeasMatrix::Zero();
+    Rm(0, 0)         = m_measNoise;
+    Rm(1, 1)         = m_measNoise;
+    Rm(2, 2)         = m_measNoise;
+    m_kalmanFilter.setMeasurementNoise(Rm);
 
-    // ∂q_{k+1}/∂bx = -0.5*dt*(dΩ/dwx)*q
-    Eigen::Matrix<fp32, 4, 1> dq_dbx = -0.5f * m_deltaTime * (dO_dwx * qv);
-    Eigen::Matrix<fp32, 4, 1> dq_dby = -0.5f * m_deltaTime * (dO_dwy * qv);
+    // 预测步骤
+    m_kalmanFilter.predict();
 
-    F.template block<4, 1>(0, 4) = dq_dbx;
-    F.template block<4, 1>(0, 5) = dq_dby;
+    // 预测态四元数归一化
+    M::StateVector xpred = m_kalmanFilter.getPredictedState();
+    fp32 q0 = xpred(0), q1 = xpred(1), q2 = xpred(2), q3 = xpred(3);
 
-    // 偏置随机游走：F_bb = I
-    F(4, 4) = 1.0f;
-    F(5, 5) = 1.0f;
+    fp32 qInvNorm = GSRLMath::invSqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
+    q0 *= qInvNorm;
+    q1 *= qInvNorm;
+    q2 *= qInvNorm;
+    q3 *= qInvNorm;
+    xpred(0) = q0;
+    xpred(1) = q1;
+    xpred(2) = q2;
+    xpred(3) = q3;
+    m_kalmanFilter.setState(xpred);
 
-    myKalmanFilter.setTransitionMatrix(F);
+    // Bias协方差fading处理
+    M::StateMatrix Ppred = m_kalmanFilter.getPredictedCovariance();
+    Ppred(4, 4) /= m_lambda;
+    Ppred(5, 5) /= m_lambda;
+    if (Ppred(4, 4) > 10000.0f) Ppred(4, 4) = 10000.0f;
+    if (Ppred(5, 5) > 10000.0f) Ppred(5, 5) = 10000.0f;
 
-    // ---------- 5) 构建量测雅可比 H ----------
-    M::ObsMatrix H;
-    H.setZero();
+    // 构建观测矩阵H
+    fp32 dq0 = 2.0f * q0, dq1 = 2.0f * q1, dq2 = 2.0f * q2, dq3 = 2.0f * q3;
 
-    // h(q) = [2(q1q3-q0q2), 2(q0q1+q2q3), q0^2-q1^2-q2^2+q3^2]
-    // ∂h/∂q
-    // 直接套公式
-    H(0, 0) = -2.0f * q2;
-    H(0, 1) = 2.0f * q3;
-    H(0, 2) = -2.0f * q0;
-    H(0, 3) = 2.0f * q1;
+    M::ObsMatrix H = M::ObsMatrix::Zero();
+    H(0, 0)        = -dq2;
+    H(0, 1)        = dq3;
+    H(0, 2)        = -dq0;
+    H(0, 3)        = dq1;
+    H(1, 0)        = dq1;
+    H(1, 1)        = dq0;
+    H(1, 2)        = dq3;
+    H(1, 3)        = dq2;
+    H(2, 0)        = dq0;
+    H(2, 1)        = -dq1;
+    H(2, 2)        = -dq2;
+    H(2, 3)        = dq3;
 
-    H(1, 0) = 2.0f * q1;
-    H(1, 1) = 2.0f * q0;
-    H(1, 2) = 2.0f * q3;
-    H(1, 3) = 2.0f * q2;
+    // 卡方检验与自适应量测更新
+    M::MeasMatrix S    = H * Ppred * H.transpose() + Rm;
+    M::MeasMatrix Sinv = S.inverse();
 
-    H(2, 0) = 2.0f * q0;
-    H(2, 1) = -2.0f * q1;
-    H(2, 2) = -2.0f * q2;
-    H(2, 3) = 2.0f * q3;
+    M::MeasVector hx;
+    hx << 2.0f * (q1 * q3 - q0 * q2),
+        2.0f * (q0 * q1 + q2 * q3),
+        q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3;
 
-    myKalmanFilter.setObservationMatrix(H);
-    setChiSquareThreshold(0.1);
-    // ---------- 6) 卡方检测 ---------
-    if (isCheckChiSquare) {
-        myKalmanFilter.predict();
-        M::MeasVector innovation = Measurement - H * myKalmanFilter.getPredictedState();
+    for (int i = 0; i < 3; i++) {
+        m_orientationCosine[i] = acosf(fabsf(hx(i)));
+    }
 
-        const auto &P   = myKalmanFilter.getPredictedCovariance();
-        const auto &R   = myKalmanFilter.getMeasureNoise();
-        M::MeasMatrix S = H * P * H.transpose() + R;
+    M::MeasVector innovation = measurement - hx;
+    fp32 chiSquare           = (innovation.transpose() * Sinv * innovation)(0, 0);
 
-        ChiSquare = (innovation.transpose() * S.inverse() * innovation)(0, 0);
-        // ---------- 7) 预测 + 更新 ----------
-        if (ChiSquare > ChiSquareTestThreshold) {
-            // 只进行预测，不进行观测
-            myKalmanFilter.predict();
+    bool skipCorrection = false;
+
+    if (m_isCheckChiSquare) {
+        if (chiSquare < 0.5f * m_chiSquareThreshold) {
+            m_convergeFlag = true;
+        }
+
+        if (chiSquare > m_chiSquareThreshold && m_convergeFlag) {
+            if (m_stableFlag) {
+                m_errorCount++;
+            } else {
+                m_errorCount = 0;
+            }
+
+            if (m_errorCount > 50) {
+                m_convergeFlag = false;
+            } else {
+                skipCorrection = true;
+            }
         } else {
-            // 执行常规更新
-            myKalmanFilter.update(Measurement);
+            if (chiSquare > 0.1f * m_chiSquareThreshold && m_convergeFlag) {
+                m_adaptiveGainScale = (m_chiSquareThreshold - chiSquare) / (0.9f * m_chiSquareThreshold);
+            } else {
+                m_adaptiveGainScale = 1.0f;
+            }
+            m_errorCount = 0;
         }
     } else {
-        // 执行常规更新
-        myKalmanFilter.update(Measurement);
+        m_adaptiveGainScale = 1.0f;
     }
 
-    // ---------- 8) 回写状态到类成员与 AHRS 输出 ----------
-    M::StateVector xhat = myKalmanFilter.getState();
+    if (skipCorrection) {
+        m_kalmanFilter.setState(xpred);
+        m_kalmanFilter.setCovariance(Ppred);
+    } else {
+        M::GainMatrix K = Ppred * H.transpose() * Sinv;
+        K *= m_adaptiveGainScale;
 
-    q0 = xhat(0);
-    q1 = xhat(1);
-    q2 = xhat(2);
-    q3 = xhat(3);
-    bx = xhat(4);
-    by = xhat(5);
+        constexpr fp32 HALF_PI = MATH_PI / 2.0f;
+        for (int j = 0; j < 3; j++) {
+            K(4, j) *= m_orientationCosine[0] / HALF_PI;
+            K(5, j) *= m_orientationCosine[1] / HALF_PI;
+        }
 
-    // 四元数归一化
-    fp32 inv_qn = GSRLMath::invSqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
-    q0 *= inv_qn;
-    q1 *= inv_qn;
-    q2 *= inv_qn;
-    q3 *= inv_qn;
+        M::StateVector delta = K * innovation;
 
-    // 更新本类缓存
-    q[0] = q0;
-    q[1] = q1;
-    q[2] = q2;
-    q[3] = q3;
+        if (m_convergeFlag) {
+            fp32 biasLimit = 1e-2f * dt;
+            GSRLMath::constrain(delta(4), biasLimit);
+            GSRLMath::constrain(delta(5), biasLimit);
+        }
 
-    GyroBias.x = bx;
-    GyroBias.y = by;
-    GyroBias.z = 0.0f; // 目前不估计 z 轴偏置
+        delta(3) = 0.0f;
 
-    // 更新 AHRS 基类四元数
+        m_kalmanFilter.setState(xpred + delta);
+
+        M::StateMatrix IKH = M::StateMatrix::Identity() - K * H;
+        m_kalmanFilter.setCovariance(IKH * Ppred);
+    }
+
+    // 回写状态到AHRS输出
+    M::StateVector xhat = m_kalmanFilter.getState();
+
+    q0      = xhat(0);
+    q1      = xhat(1);
+    q2      = xhat(2);
+    q3      = xhat(3);
+    fp32 bx = xhat(4), by = xhat(5);
+
+    qInvNorm = GSRLMath::invSqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
+    q0 *= qInvNorm;
+    q1 *= qInvNorm;
+    q2 *= qInvNorm;
+    q3 *= qInvNorm;
+
+    m_gyroBias.x = bx;
+    m_gyroBias.y = by;
+    m_gyroBias.z = 0.0f;
+
     m_quaternion[0] = q0;
     m_quaternion[1] = q1;
     m_quaternion[2] = q2;
     m_quaternion[3] = q3;
-}
 
-void Kalman_Quaternion_EKF::reset()
-{
-    // AHRS父类重置
-    AHRS::reset();
-
-    // 重置卡尔曼滤波器
-    myKalmanFilter.reset();
-
-    // 重置类内计算加速度值
-    Accel.x = 0;
-    Accel.y = 0;
-    Accel.z = 0;
-}
-
-/**
- * @brief 设置卡方检测阈值，卡方大于这一阈值则忽略加速度数据
- */
-void Kalman_Quaternion_EKF::setChiSquareThreshold(float Chi)
-{
-    ChiSquareTestThreshold = Chi;
+    xhat(0) = q0;
+    xhat(1) = q1;
+    xhat(2) = q2;
+    xhat(3) = q3;
+    m_kalmanFilter.setState(xhat);
 }
