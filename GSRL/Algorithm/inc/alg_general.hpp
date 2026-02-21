@@ -30,11 +30,16 @@ namespace GSRLMath
 {
     /**
      * @brief 快速平方根倒数
-     * @param x 输入值
+     * @param x 输入值（应为正数）
      * @return 平方根倒数
+     * @note 有硬件FPU时使用sqrtf函数调用硬件指令，精度高且速度快；
+     *       无FPU时使用快速逆平方根算法（Quake III），牺牲少量精度换取性能。
      */
     inline fp32 invSqrt(fp32 x)
     {
+    #if defined(__ARM_FP) && (__ARM_FP & 0x04) // 硬件FPU可用且支持单精度浮点运算
+        return 1.0f / sqrtf(x);
+    #else
         fp32 halfx = 0.5f * x;
         fp32 y     = x;
         int32_t i  = *(int32_t *)&y;
@@ -42,6 +47,7 @@ namespace GSRLMath
         y          = *(fp32 *)&i;
         y          = y * (1.5f - (halfx * y * y));
         return y;
+    #endif // (__ARM_FP) && (__ARM_FP & 0x04)
     }
 
     /**
@@ -94,14 +100,14 @@ namespace GSRLMath
         return (int)((x_float - offset) * ((float)((1 << bits) - 1)) / span);
     }
     /**
-    * @brief 无符号整数转换为浮点数函数
-    * @param x_int 待转换的无符号整数
-    * @param x_min 范围最小值
-    * @param x_max 范围最大值
-    * @param bits 无符号整数的位数
-    * @retval 浮点数结果
-    * @details 将给定的无符号整数 x_int 在指定范围 [x_min, x_max] 内进行线性映射，映射结果为一个浮点数
-    */
+     * @brief 无符号整数转换为浮点数函数
+     * @param x_int 待转换的无符号整数
+     * @param x_min 范围最小值
+     * @param x_max 范围最大值
+     * @param bits 无符号整数的位数
+     * @retval 浮点数结果
+     * @details 将给定的无符号整数 x_int 在指定范围 [x_min, x_max] 内进行线性映射，映射结果为一个浮点数
+     */
     constexpr inline float convertUintToFloat(int x_int, float x_min, float x_max, int bits)
     {
         /* converts unsigned int to float, given range and number of bits */

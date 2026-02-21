@@ -31,26 +31,10 @@ MotorDM4310 motor(1, 0, 3.1415926f, 40, 15, &myPID);
 // RemoteControl
 Dr16RemoteControl dr16;
 
-//建议使用lambda表达式或函数来初始化ET08ARemoteControl配置
-ET08ARemoteControl et08a([]() {
-    ET08ARemoteControl::Config config;
-    // config.switchSA      = ET08AChannelIndex::CH_5;
-    // config.switchSD      = ET08AChannelIndex::CH_6;
-    // config.knobLD       = ET08AChannelIndex::CH_7;
-    // config.knobRD       = ET08AChannelIndex::CH_8;
-    return config;
-}(), 0.05f);//5%死区;
-
-//也可以这样初始化，必须写在函数里
-// ET08ARemoteControl::Config et08aConfig;
-// // et08aConfig.rightStickJ1X = ET08AChannelIndex::CH_1;
-// ET08ARemoteControl et08a(et08aConfig);
-
 /* Variables -----------------------------------------------------------------*/
 
 /* Function prototypes -------------------------------------------------------*/
 extern "C" void dr16ITCallback(uint8_t *Buffer, uint16_t Length);
-extern "C" void ET08AITCallback(uint8_t *Buffer, uint16_t Length);
 extern "C" void can1RxCallback(can_rx_message_t *pRxMsg);
 inline void transmitMotorsControlData();
 
@@ -80,11 +64,6 @@ extern "C" void test_task(void *argument)
 extern "C" void dr16ITCallback(uint8_t *Buffer, uint16_t Length)
 {
     dr16.receiveRxDataFromISR(Buffer);
-}
-
-extern "C" void ET08AITCallback(uint8_t *Buffer, uint16_t Length)
-{
-    et08a.receiveRxDataFromISR(Buffer);
 }
 
 extern "C" void can1RxCallback(can_rx_message_t *pRxMsg)
