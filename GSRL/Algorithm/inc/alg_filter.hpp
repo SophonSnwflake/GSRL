@@ -407,11 +407,6 @@ public:
         m_measNoise = R;
     }
 
-    const MeasMatrix &getMeasureNoise() const
-    {
-        return m_measNoise;
-    }
-
     /**
      * @brief 获取当前状态
      */
